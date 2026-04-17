@@ -39,7 +39,7 @@ async function listWindows(pi: ExtensionAPI): Promise<WindowInfo[]> {
 }
 
 async function screenshotWindow(pi: ExtensionAPI, windowId: number): Promise<string | null> {
-	const tmpFile = join(tmpdir(), `pi-sense-${Date.now()}.png`);
+	const tmpFile = join(tmpdir(), `pi-senses-${Date.now()}.png`);
 
 	const result = await pi.exec("screencapture", [`-l${windowId}`, "-o", "-x", tmpFile], {
 		timeout: 10000,
@@ -56,8 +56,8 @@ export default function piSense(pi: ExtensionAPI) {
 
 	// ── Commands ──
 
-	pi.registerCommand("healthcheck-sense", {
-		description: "Check macOS permissions required by pi-sense",
+	pi.registerCommand("proprioception", {
+		description: "Check macOS permissions required by pi-senses",
 		handler: async (_args, ctx) => {
 			const screenRecording = await checkScreenRecording(pi);
 			const accessibility = await checkAccessibility(pi);
@@ -79,12 +79,12 @@ export default function piSense(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("sense", {
+	pi.registerCommand("look", {
 		description: "Capture a window screenshot by description (macOS)",
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			const query = args.trim();
 			if (!query && !lastTarget) {
-				ctx.ui.notify("Usage: /sense <window description>", "warning");
+				ctx.ui.notify("Usage: /look <window description>", "warning");
 				return;
 			}
 
@@ -97,7 +97,7 @@ export default function piSense(pi: ExtensionAPI) {
 			let target: WindowInfo;
 
 			if (!query) {
-				// Re-sense: find the same window by owner+name in the current window list.
+				// Re-look: find the same window by owner+name in the current window list.
 				const match = windows.find(
 					(w) => w.owner === lastTarget!.owner && w.name === lastTarget!.name,
 				);
@@ -143,7 +143,7 @@ export default function piSense(pi: ExtensionAPI) {
 	// ── Agent tools ──
 
 	pi.registerTool({
-		name: "sense_list_windows",
+		name: "senses_eyes_list_windows",
 		label: "List Windows",
 		description: "List all visible windows on macOS. Returns window IDs, owner app names, and window titles.",
 		promptSnippet: "List visible macOS windows (id, owner, name)",
@@ -165,16 +165,16 @@ export default function piSense(pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
-		name: "sense_screenshot_window",
+		name: "senses_eyes_screenshot_window",
 		label: "Screenshot Window",
-		description: "Capture a screenshot of a specific window by its numeric window ID (as returned by sense_list_windows). Returns the file path to the screenshot image.",
+		description: "Capture a screenshot of a specific window by its numeric window ID (as returned by senses_eyes_list_windows). Returns the file path to the screenshot image.",
 		promptSnippet: "Capture a screenshot of a macOS window by ID",
 		promptGuidelines: [
-			"Call sense_list_windows first to discover window IDs, then use sense_screenshot_window with the desired ID.",
+			"Call senses_eyes_list_windows first to discover window IDs, then use senses_eyes_screenshot_window with the desired ID.",
 			"After capturing, use the read tool on the returned path to view the screenshot.",
 		],
 		parameters: Type.Object({
-			windowId: Type.Number({ description: "The numeric window ID from sense_list_windows" }),
+			windowId: Type.Number({ description: "The numeric window ID from senses_eyes_list_windows" }),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
 			const path = await screenshotWindow(pi, params.windowId);
@@ -250,7 +250,7 @@ async function resolveWindowsWithLLM(
 		.map((w, i) => `${i}: ${formatWindow(w)}`)
 		.join("\n");
 
-	ctx.ui.setStatus("pi-sense", `Sensing "${query}"...`);
+	ctx.ui.setStatus("pi-senses", `Sensing "${query}"...`);
 	let response;
 	try {
 		response = await complete(
@@ -283,7 +283,7 @@ async function resolveWindowsWithLLM(
 			},
 		);
 	} finally {
-		ctx.ui.setStatus("pi-sense", undefined);
+		ctx.ui.setStatus("pi-senses", undefined);
 	}
 
 	const text = response.content

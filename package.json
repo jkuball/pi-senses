@@ -1,5 +1,5 @@
 {
-  "name": "pi-sense",
+  "name": "pi-senses",
   "version": "0.1.0",
   "description": "Capture window screenshots and feed them into pi conversations",
   "keywords": ["pi-package"],
