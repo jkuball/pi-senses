@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { complete } from "@mariozechner/pi-ai";
+import { Type } from "@sinclair/typebox";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,8 +10,52 @@ interface WindowInfo {
 	owner: string;
 }
 
+// ── Core helpers (shared by tools and commands) ──────────────────────
+
+function formatWindow(w: WindowInfo): string {
+	return w.name ? `${w.owner} — ${w.name}` : w.owner;
+}
+
+async function listWindows(pi: ExtensionAPI): Promise<WindowInfo[]> {
+	const result = await pi.exec("swift", ["-e", SWIFT_WINDOW_LIST], {
+		timeout: 15000,
+	});
+	if (result.code !== 0) return [];
+
+	try {
+		const windows: WindowInfo[] = JSON.parse(result.stdout.trim());
+
+		// Deduplicate: keep unique (owner, name) pairs, prefer first occurrence.
+		const seen = new Set<string>();
+		return windows.filter((w) => {
+			const key = `${w.owner}\0${w.name}`;
+			if (seen.has(key)) return false;
+			seen.add(key);
+			return true;
+		});
+	} catch {
+		return [];
+	}
+}
+
+async function screenshotWindow(pi: ExtensionAPI, windowId: number): Promise<string | null> {
+	const tmpFile = join(tmpdir(), `pi-sense-${Date.now()}.png`);
+
+	const result = await pi.exec("screencapture", [`-l${windowId}`, "-o", "-x", tmpFile], {
+		timeout: 10000,
+	});
+	if (result.code !== 0) return null;
+
+	return tmpFile;
+}
+
+// ── Extension entry point ────────────────────────────────────────────
+
 export default function piSense(pi: ExtensionAPI) {
 	let lastTarget: WindowInfo | null = null;
+
+	// ── Commands ──
+
 	pi.registerCommand("healthcheck-sense", {
 		description: "Check macOS permissions required by pi-sense",
 		handler: async (_args, ctx) => {
@@ -36,17 +81,14 @@ export default function piSense(pi: ExtensionAPI) {
 
 	pi.registerCommand("sense", {
 		description: "Capture a window screenshot by description (macOS)",
-		handler: senseHandler,
-	});
-
-	async function senseHandler(args: string, ctx: ExtensionCommandContext) {
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			const query = args.trim();
 			if (!query && !lastTarget) {
 				ctx.ui.notify("Usage: /sense <window description>", "warning");
 				return;
 			}
 
-			const windows = await getVisibleWindows(pi);
+			const windows = await listWindows(pi);
 			if (windows.length === 0) {
 				ctx.ui.notify("No visible windows found.", "warning");
 				return;
@@ -80,8 +122,8 @@ export default function piSense(pi: ExtensionAPI) {
 				}
 			}
 
-			const screenshotPath = await captureWindow(pi, target.id);
-			if (!screenshotPath) {
+			const path = await screenshotWindow(pi, target.id);
+			if (!path) {
 				ctx.ui.notify("Failed to capture screenshot.", "error");
 				return;
 			}
@@ -89,18 +131,69 @@ export default function piSense(pi: ExtensionAPI) {
 			const label = formatWindow(target);
 			const prompt = [
 				`[Screenshot of: ${label}]`,
-				`Use the read tool to look at the screenshot: ${screenshotPath}`,
+				`Use the read tool to look at the screenshot: ${path}`,
 			].join("\n");
 
 			lastTarget = target;
 			ctx.ui.setEditorText(`${prompt}\n`);
 			ctx.ui.notify(`Captured ${label}. Edit the prompt and press Enter to send.`, "info");
-		}
+		},
+	});
+
+	// ── Agent tools ──
+
+	pi.registerTool({
+		name: "sense_list_windows",
+		label: "List Windows",
+		description: "List all visible windows on macOS. Returns window IDs, owner app names, and window titles.",
+		promptSnippet: "List visible macOS windows (id, owner, name)",
+		parameters: Type.Object({}),
+		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
+			const windows = await listWindows(pi);
+			if (windows.length === 0) {
+				return {
+					content: [{ type: "text", text: "No visible windows found." }],
+					details: {},
+				};
+			}
+			const listing = windows.map((w) => `id=${w.id}  ${formatWindow(w)}`).join("\n");
+			return {
+				content: [{ type: "text", text: listing }],
+				details: { windows },
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "sense_screenshot_window",
+		label: "Screenshot Window",
+		description: "Capture a screenshot of a specific window by its numeric window ID (as returned by sense_list_windows). Returns the file path to the screenshot image.",
+		promptSnippet: "Capture a screenshot of a macOS window by ID",
+		promptGuidelines: [
+			"Call sense_list_windows first to discover window IDs, then use sense_screenshot_window with the desired ID.",
+			"After capturing, use the read tool on the returned path to view the screenshot.",
+		],
+		parameters: Type.Object({
+			windowId: Type.Number({ description: "The numeric window ID from sense_list_windows" }),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const path = await screenshotWindow(pi, params.windowId);
+			if (!path) {
+				return {
+					content: [{ type: "text", text: "Failed to capture screenshot." }],
+					details: {},
+					isError: true,
+				};
+			}
+			return {
+				content: [{ type: "text", text: `Screenshot saved to: ${path}\nUse the read tool to view it.` }],
+				details: { path, windowId: params.windowId },
+			};
+		},
+	});
 }
 
-function formatWindow(w: WindowInfo): string {
-	return w.name ? `${w.owner} — ${w.name}` : w.owner;
-}
+// ── Window resolution (interactive command only) ─────────────────────
 
 async function resolveWindows(
 	pi: ExtensionAPI,
@@ -122,20 +215,16 @@ function matchWindowsByKeyword(windows: WindowInfo[], query: string): WindowInfo
 		.split(/\s+/)
 		.filter(Boolean);
 
-	// Score each window: count how many query words appear in the haystack.
 	const scored = windows.map((w) => {
 		const haystack = `${w.owner} ${w.name}`.toLowerCase();
 		const hits = words.filter((word) => haystack.includes(word)).length;
 		return { window: w, hits };
 	});
 
-	// Keep only windows that matched at least one word.
 	const matched = scored.filter((s) => s.hits > 0);
 	if (matched.length === 0) return [];
 
-	// Sort by number of hits descending so best matches come first.
 	matched.sort((a, b) => b.hits - a.hits);
-
 	return matched.map((s) => s.window);
 }
 
@@ -164,35 +253,35 @@ async function resolveWindowsWithLLM(
 	ctx.ui.setStatus("pi-sense", `Sensing "${query}"...`);
 	let response;
 	try {
-	response = await complete(
-		model,
-		{
-			systemPrompt: [
-				"You match a user's window description to a list of open windows.",
-				"Return ONLY the numeric indices of matching windows, one per line.",
-				"Return the best matches (can be more than one if ambiguous).",
-				"If nothing matches, return the single word NONE.",
-				"Do not output anything else.",
-			].join(" "),
-			messages: [
-				{
-					role: "user",
-					content: [
-						{
-							type: "text",
-							text: `Windows:\n${windowList}\n\nUser query: "${query}"`,
-						},
-					],
-					timestamp: Date.now(),
-				},
-			],
-		},
-		{
-			apiKey: auth.apiKey,
-			headers: auth.headers,
-			maxTokens: 128,
-		},
-	);
+		response = await complete(
+			model,
+			{
+				systemPrompt: [
+					"You match a user's window description to a list of open windows.",
+					"Return ONLY the numeric indices of matching windows, one per line.",
+					"Return the best matches (can be more than one if ambiguous).",
+					"If nothing matches, return the single word NONE.",
+					"Do not output anything else.",
+				].join(" "),
+				messages: [
+					{
+						role: "user",
+						content: [
+							{
+								type: "text",
+								text: `Windows:\n${windowList}\n\nUser query: "${query}"`,
+							},
+						],
+						timestamp: Date.now(),
+					},
+				],
+			},
+			{
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+				maxTokens: 128,
+			},
+		);
 	} finally {
 		ctx.ui.setStatus("pi-sense", undefined);
 	}
@@ -212,6 +301,8 @@ async function resolveWindowsWithLLM(
 
 	return indices.map((i) => windows[i]);
 }
+
+// ── Swift snippets ───────────────────────────────────────────────────
 
 const SWIFT_WINDOW_LIST = `
 import CoreGraphics
@@ -236,39 +327,6 @@ let data = try JSONSerialization.data(withJSONObject: result)
 print(String(data: data, encoding: .utf8)!)
 `.trim();
 
-async function getVisibleWindows(pi: ExtensionAPI): Promise<WindowInfo[]> {
-	const result = await pi.exec("swift", ["-e", SWIFT_WINDOW_LIST], {
-		timeout: 15000,
-	});
-	if (result.code !== 0) return [];
-
-	try {
-		const windows: WindowInfo[] = JSON.parse(result.stdout.trim());
-
-		// Deduplicate: keep unique (owner, name) pairs, prefer first occurrence.
-		const seen = new Set<string>();
-		return windows.filter((w) => {
-			const key = `${w.owner}\0${w.name}`;
-			if (seen.has(key)) return false;
-			seen.add(key);
-			return true;
-		});
-	} catch {
-		return [];
-	}
-}
-
-async function captureWindow(pi: ExtensionAPI, windowId: number): Promise<string | null> {
-	const tmpFile = join(tmpdir(), `pi-sense-${Date.now()}.png`);
-
-	const result = await pi.exec("screencapture", [`-l${windowId}`, "-o", "-x", tmpFile], {
-		timeout: 10000,
-	});
-	if (result.code !== 0) return null;
-
-	return tmpFile;
-}
-
 const SWIFT_CHECK_SCREEN_RECORDING = `
 import CoreGraphics
 let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
@@ -280,15 +338,17 @@ let hasNames = list.contains { ($0["kCGWindowName"] as? String) != nil }
 print(hasNames ? "true" : "false")
 `.trim();
 
-async function checkScreenRecording(pi: ExtensionAPI): Promise<boolean> {
-	const result = await pi.exec("swift", ["-e", SWIFT_CHECK_SCREEN_RECORDING], { timeout: 15000 });
-	return result.code === 0 && result.stdout.trim() === "true";
-}
-
 const SWIFT_CHECK_ACCESSIBILITY = `
 import ApplicationServices
 print(AXIsProcessTrusted())
 `.trim();
+
+// ── Permission checks ───────────────────────────────────────────────
+
+async function checkScreenRecording(pi: ExtensionAPI): Promise<boolean> {
+	const result = await pi.exec("swift", ["-e", SWIFT_CHECK_SCREEN_RECORDING], { timeout: 15000 });
+	return result.code === 0 && result.stdout.trim() === "true";
+}
 
 async function checkAccessibility(pi: ExtensionAPI): Promise<boolean> {
 	const result = await pi.exec("swift", ["-e", SWIFT_CHECK_ACCESSIBILITY], { timeout: 15000 });
