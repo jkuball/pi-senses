@@ -2,7 +2,7 @@
 
 (Sloppy) Senses for your pi. At least on macos.
 
-A [pi](https://github.com/badlogic/pi-mono) extension that allows your agent to interact with macos windows.
+A [pi](https://github.com/badlogic/pi-mono) extension that allows your agent to interact with macos windows using native features only.
 
 ## Senses
 
@@ -17,8 +17,8 @@ Use `/proprioception` to run a quick check.
 
 With eyes, the agent can see:
 
-- **`senses_eyes_list_windows`** lists all visible windows with their numeric IDs, owner app names, and window titles.
-- **`senses_eyes_screenshot_window`** captures a screenshot of a window by its numeric ID (as returned by `senses_eyes_list_windows`) and returns the file path to the image.
+- **`senses__eyes__list_windows`** lists all visible windows with their numeric IDs, owner app names, and window titles.
+- **`senses__eyes__screenshot_window`** captures a screenshot of a window by its numeric ID (as returned by `senses__eyes__list_windows`) and returns the file path to the image.
 
 #### `/look <description>?`
 
@@ -31,10 +31,9 @@ With eyes, the user can direct the agent to look at something:
 /look
 ```
 
-The command resolves a visible window from your description, captures a screenshot, and prefills your prompt with the image and window metadata. Edit/enrich the prompt, press Enter, and the screenshot is sent to the model.
+The command resolves a visible window from your description, captures a screenshot, and prefills your prompt with the image and window metadata.
+Edit/enrich the prompt, press Enter, and the screenshot is sent to the model.
 
-If the match is ambiguous, you pick from a shortlist.
-
-When no description is given, the last captured window is re-captured.
-
-Simple queries are matched by keyword. When that fails, the current model is used to find the best match from the window list.
+- Queries are matched by keyword. When that fails, the current model is used to find the best match from the window list.
+- If the match is ambiguous, you pick from a shortlist.
+- When no description is given, the last captured window is re-captured.

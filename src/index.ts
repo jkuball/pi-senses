@@ -110,7 +110,7 @@ export default function piSense(pi: ExtensionAPI) {
 				const matches = await resolveWindows(pi, ctx, windows, query);
 
 				if (matches.length === 0) {
-					ctx.ui.notify(`No windows matching "${query}".`, "warning");
+					ctx.ui.notify(`No windows matching "/look ${query}".`, "warning");
 					return;
 				} else if (matches.length === 1) {
 					target = matches[0];
@@ -136,14 +136,14 @@ export default function piSense(pi: ExtensionAPI) {
 
 			lastTarget = target;
 			ctx.ui.setEditorText(`${prompt}\n`);
-			ctx.ui.notify(`Captured ${label}. Edit the prompt and press Enter to send.`, "info");
+			ctx.ui.notify(`Captured '${label}'. Edit the prompt and press Enter to send.`, "info");
 		},
 	});
 
 	// ── Agent tools ──
 
 	pi.registerTool({
-		name: "senses_eyes_list_windows",
+		name: "senses__eyes__list_windows",
 		label: "List Windows",
 		description: "List all visible windows on macOS. Returns window IDs, owner app names, and window titles.",
 		promptSnippet: "List visible macOS windows (id, owner, name)",
@@ -165,16 +165,16 @@ export default function piSense(pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
-		name: "senses_eyes_screenshot_window",
+		name: "senses__eyes__screenshot_window",
 		label: "Screenshot Window",
-		description: "Capture a screenshot of a specific window by its numeric window ID (as returned by senses_eyes_list_windows). Returns the file path to the screenshot image.",
+		description: "Capture a screenshot of a specific window by its numeric window ID (as returned by senses__eyes__list_windows). Returns the file path to the screenshot image.",
 		promptSnippet: "Capture a screenshot of a macOS window by ID",
 		promptGuidelines: [
-			"Call senses_eyes_list_windows first to discover window IDs, then use senses_eyes_screenshot_window with the desired ID.",
+			"Call senses__eyes__list_windows first to discover window IDs, then use senses__eyes__screenshot_window with the desired ID.",
 			"After capturing, use the read tool on the returned path to view the screenshot.",
 		],
 		parameters: Type.Object({
-			windowId: Type.Number({ description: "The numeric window ID from senses_eyes_list_windows" }),
+			windowId: Type.Number({ description: "The numeric window ID from senses__eyes__list_windows" }),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
 			const path = await screenshotWindow(pi, params.windowId);
@@ -221,7 +221,7 @@ function matchWindowsByKeyword(windows: WindowInfo[], query: string): WindowInfo
 		return { window: w, hits };
 	});
 
-	const matched = scored.filter((s) => s.hits > 0);
+	const matched = scored.filter((s) => s.hits === words.length);
 	if (matched.length === 0) return [];
 
 	matched.sort((a, b) => b.hits - a.hits);
@@ -269,7 +269,7 @@ async function resolveWindowsWithLLM(
 						content: [
 							{
 								type: "text",
-								text: `Windows:\n${windowList}\n\nUser query: "${query}"`,
+								text: `Windows:\n${windowList}\n\nUser query: "/look ${query}"`,
 							},
 						],
 						timestamp: Date.now(),
