@@ -68,6 +68,52 @@ async function clickWindow(pi: ExtensionAPI, windowId: number, x: number, y: num
 	return { ok: true };
 }
 
+async function typeInWindow(pi: ExtensionAPI, windowId: number, text: string): Promise<{ ok: boolean; error?: string }> {
+	// Escape the text for embedding in Swift source: backslashes first, then quotes and newlines
+	const escaped = text
+		.replace(/\\/g, "\\\\")
+		.replace(/"/g, '\\"')
+		.replace(/\n/g, "\\n")
+		.replace(/\r/g, "\\r")
+		.replace(/\t/g, "\\t");
+
+	const script = SWIFT_TYPE
+		.replace("__WINDOW_ID__", String(windowId))
+		.replace("__TEXT__", escaped);
+
+	const result = await pi.exec("swift", ["-e", script], { timeout: 30000 });
+	if (result.code !== 0) {
+		return { ok: false, error: result.stderr.trim() || "Swift type script failed" };
+	}
+
+	const output = result.stdout.trim();
+	if (output.startsWith("ERROR:")) {
+		return { ok: false, error: output };
+	}
+
+	return { ok: true };
+}
+
+async function sendKeyInWindow(pi: ExtensionAPI, windowId: number, key: string, modifiers: string[]): Promise<{ ok: boolean; error?: string }> {
+	const modJson = JSON.stringify(modifiers);
+	const script = SWIFT_KEY
+		.replace("__WINDOW_ID__", String(windowId))
+		.replace("__KEY__", key)
+		.replace("__MODIFIERS__", modJson);
+
+	const result = await pi.exec("swift", ["-e", script], { timeout: 15000 });
+	if (result.code !== 0) {
+		return { ok: false, error: result.stderr.trim() || "Swift key script failed" };
+	}
+
+	const output = result.stdout.trim();
+	if (output.startsWith("ERROR:")) {
+		return { ok: false, error: output };
+	}
+
+	return { ok: true };
+}
+
 // ── Extension entry point ────────────────────────────────────────────
 
 export default function piSense(pi: ExtensionAPI) {
@@ -149,7 +195,7 @@ export default function piSense(pi: ExtensionAPI) {
 
 			const label = formatWindow(target);
 			const prompt = [
-				`[Screenshot of: ${label}]`,
+				`[Screenshot of: ${label}] (windowId=${target.id})`,
 				`Use the read tool to look at the screenshot: ${path}`,
 			].join("\n");
 
@@ -207,6 +253,75 @@ export default function piSense(pi: ExtensionAPI) {
 			return {
 				content: [{ type: "text", text: `Screenshot saved to: ${path}\nUse the read tool to view it.` }],
 				details: { path, windowId: params.windowId },
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "senses__hands__type",
+		label: "Type Text",
+		description:
+			"Type text into a window. Takes a window ID and the text to type. " +
+			"The tool automatically activates the target app and types each character sequentially.",
+		promptSnippet: "Type text into a macOS window",
+		promptGuidelines: [
+			"Use senses__hands__click first to focus the correct text field, then use senses__hands__type to enter text.",
+			"For special keys like Enter, Tab, Escape, or keyboard shortcuts, use senses__hands__key instead.",
+		],
+		parameters: Type.Object({
+			windowId: Type.Number({ description: "The numeric window ID from senses__eyes__list_windows" }),
+			text: Type.String({ description: "The text to type" }),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const result = await typeInWindow(pi, params.windowId, params.text);
+			if (!result.ok) {
+				return {
+					content: [{ type: "text", text: `Type failed: ${result.error}` }],
+					details: {},
+					isError: true,
+				};
+			}
+			return {
+				content: [{ type: "text", text: `Typed ${params.text.length} character(s) into window ${params.windowId}.` }],
+				details: { windowId: params.windowId, textLength: params.text.length },
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "senses__hands__key",
+		label: "Send Key",
+		description:
+			"Send a key press to a window, optionally with modifier keys. " +
+			"Takes a window ID, a key name, and optional modifiers. " +
+			"The tool automatically activates the target app and sends the key event.",
+		promptSnippet: "Send a key press (with optional modifiers) to a macOS window",
+		promptGuidelines: [
+			"Supported keys: return, tab, escape, space, delete, forwarddelete, " +
+			"uparrow, downarrow, leftarrow, rightarrow, home, end, pageup, pagedown, " +
+			"f1-f12, plus any single character (a-z, 0-9, punctuation).",
+			"Supported modifiers: command, shift, option, control. Pass as an array, e.g. [\"command\", \"shift\"].",
+			"Examples: key='return' for Enter, key='a' modifiers=['command'] for Cmd+A, key='tab' for Tab.",
+		],
+		parameters: Type.Object({
+			windowId: Type.Number({ description: "The numeric window ID from senses__eyes__list_windows" }),
+			key: Type.String({ description: "The key to press (e.g. 'return', 'tab', 'escape', 'a', 'f1')" }),
+			modifiers: Type.Optional(Type.Array(Type.String({ description: "Modifier key: command, shift, option, or control" }), { description: "Optional modifier keys to hold during the key press" })),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const mods = params.modifiers ?? [];
+			const result = await sendKeyInWindow(pi, params.windowId, params.key, mods);
+			if (!result.ok) {
+				return {
+					content: [{ type: "text", text: `Key press failed: ${result.error}` }],
+					details: {},
+					isError: true,
+				};
+			}
+			const desc = mods.length > 0 ? `${mods.join("+")}+${params.key}` : params.key;
+			return {
+				content: [{ type: "text", text: `Sent key '${desc}' to window ${params.windowId}.` }],
+				details: { windowId: params.windowId, key: params.key, modifiers: mods },
 			};
 		},
 	});
@@ -302,14 +417,15 @@ async function resolveWindowsWithLLM(
 		.map((w, i) => `${i}: ${formatWindow(w)}`)
 		.join("\n");
 
-	ctx.ui.setStatus("pi-senses", `Sensing "${query}"...`);
+	ctx.ui.setStatus("pi-senses", `Sensing "/look ${query}"...`);
 	let response;
 	try {
 		response = await complete(
 			model,
 			{
 				systemPrompt: [
-					"You match a user's window description to a list of open windows.",
+					"You are part of the pi-senses extension and live inside the coding harness 'pi'.",
+					"You must match a user's window description to a list of open windows.",
 					"Return ONLY the numeric indices of matching windows, one per line.",
 					"Return the best matches (can be more than one if ambiguous).",
 					"If nothing matches, return the single word NONE.",
@@ -433,6 +549,162 @@ usleep(100_000)
 mouseUp.post(tap: .cghidEventTap)
 
 print("OK: clicked at (\(clickPoint.x), \(clickPoint.y)) scale=\(scaleFactor)")
+`.trim();
+
+const SWIFT_TYPE = `
+import AppKit
+import CoreGraphics
+import Foundation
+
+let targetWindowId: UInt32 = __WINDOW_ID__
+let text = "__TEXT__"
+
+// Find window PID
+let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+guard let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else {
+    print("ERROR: Cannot list windows")
+    exit(1)
+}
+
+var windowPID: Int32?
+for info in list {
+    guard let id = info["kCGWindowNumber"] as? UInt32, id == targetWindowId,
+          let pid = info["kCGWindowOwnerPID"] as? Int32 else { continue }
+    windowPID = pid
+    break
+}
+
+guard let pid = windowPID else {
+    print("ERROR: Window \\(targetWindowId) not found")
+    exit(1)
+}
+
+// Activate the owning app
+if let app = NSRunningApplication(processIdentifier: pid) {
+    app.activate()
+    usleep(300_000)
+}
+
+// Type each character using CGEvent with unicode string
+for char in text {
+    var chars = Array(String(char).utf16)
+    guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
+          let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else {
+        print("ERROR: Cannot create keyboard events")
+        exit(1)
+    }
+    keyDown.keyboardSetUnicodeString(stringLength: chars.count, unicodeString: &chars)
+    keyUp.keyboardSetUnicodeString(stringLength: chars.count, unicodeString: &chars)
+    keyDown.post(tap: .cghidEventTap)
+    keyUp.post(tap: .cghidEventTap)
+    usleep(20_000)
+}
+
+print("OK: typed \\(text.count) character(s)")
+`.trim();
+
+const SWIFT_KEY = `
+import AppKit
+import CoreGraphics
+import Foundation
+
+let targetWindowId: UInt32 = __WINDOW_ID__
+let keyName = "__KEY__"
+let modifierNames: [String] = {
+    let json = """\n__MODIFIERS__\n"""
+    guard let data = json.data(using: .utf8),
+          let arr = try? JSONSerialization.jsonObject(with: data) as? [String] else { return [] }
+    return arr
+}()
+
+// Virtual keycode lookup
+let keyCodes: [String: UInt16] = [
+    "return": 0x24, "enter": 0x24, "tab": 0x30, "space": 0x31,
+    "delete": 0x33, "backspace": 0x33, "forwarddelete": 0x75,
+    "escape": 0x35, "esc": 0x35,
+    "uparrow": 0x7E, "up": 0x7E, "downarrow": 0x7D, "down": 0x7D,
+    "leftarrow": 0x7B, "left": 0x7B, "rightarrow": 0x7C, "right": 0x7C,
+    "home": 0x73, "end": 0x77, "pageup": 0x74, "pagedown": 0x79,
+    "f1": 0x7A, "f2": 0x78, "f3": 0x63, "f4": 0x76,
+    "f5": 0x60, "f6": 0x61, "f7": 0x62, "f8": 0x64,
+    "f9": 0x65, "f10": 0x6D, "f11": 0x67, "f12": 0x6F,
+    "a": 0x00, "b": 0x0B, "c": 0x08, "d": 0x02, "e": 0x0E,
+    "f": 0x03, "g": 0x05, "h": 0x04, "i": 0x22, "j": 0x26,
+    "k": 0x28, "l": 0x25, "m": 0x2E, "n": 0x2D, "o": 0x1F,
+    "p": 0x23, "q": 0x0C, "r": 0x0F, "s": 0x01, "t": 0x11,
+    "u": 0x20, "v": 0x09, "w": 0x0D, "x": 0x07, "y": 0x10,
+    "z": 0x06,
+    "0": 0x1D, "1": 0x12, "2": 0x13, "3": 0x14, "4": 0x15,
+    "5": 0x17, "6": 0x16, "7": 0x1A, "8": 0x1C, "9": 0x19,
+    "-": 0x1B, "=": 0x18, "[": 0x21, "]": 0x1E, "\\\\": 0x2A,
+    ";": 0x29, "'": 0x27, ",": 0x2B, ".": 0x2F, "/": 0x2C,
+    "\`": 0x32,
+]
+
+// Resolve keycode
+guard let keyCode = keyCodes[keyName.lowercased()] else {
+    print("ERROR: Unknown key '\\(keyName)'. Supported: \\(keyCodes.keys.sorted().joined(separator: ", "))")
+    exit(1)
+}
+
+// Build modifier flags
+var flags: CGEventFlags = []
+for mod in modifierNames {
+    switch mod.lowercased() {
+    case "command", "cmd": flags.insert(.maskCommand)
+    case "shift": flags.insert(.maskShift)
+    case "option", "alt": flags.insert(.maskAlternate)
+    case "control", "ctrl": flags.insert(.maskControl)
+    default:
+        print("ERROR: Unknown modifier '\\(mod)'. Supported: command, shift, option, control")
+        exit(1)
+    }
+}
+
+// Find window PID
+let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+guard let windowList = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else {
+    print("ERROR: Cannot list windows")
+    exit(1)
+}
+
+var windowPID: Int32?
+for info in windowList {
+    guard let id = info["kCGWindowNumber"] as? UInt32, id == targetWindowId,
+          let pid = info["kCGWindowOwnerPID"] as? Int32 else { continue }
+    windowPID = pid
+    break
+}
+
+guard let pid = windowPID else {
+    print("ERROR: Window \\(targetWindowId) not found")
+    exit(1)
+}
+
+// Activate the owning app
+if let app = NSRunningApplication(processIdentifier: pid) {
+    app.activate()
+    usleep(300_000)
+}
+
+// Send key event
+guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
+      let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else {
+    print("ERROR: Cannot create keyboard events")
+    exit(1)
+}
+
+if !flags.isEmpty {
+    keyDown.flags = flags
+    keyUp.flags = flags
+}
+
+keyDown.post(tap: .cghidEventTap)
+usleep(100_000)
+keyUp.post(tap: .cghidEventTap)
+
+let modStr = modifierNames.isEmpty ? "" : modifierNames.joined(separator: "+") + "+"
+print("OK: sent \\(modStr)\\(keyName)")
 `.trim();
 
 const SWIFT_WINDOW_LIST = `
