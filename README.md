@@ -13,7 +13,7 @@ All senses require your terminal to have macos specific permissions:
 
 Use `/proprioception` to run a quick check.
 
-### Eyes
+### 👀 Eyes
 
 With eyes, the agent can see:
 
@@ -38,7 +38,7 @@ Edit/enrich the prompt, press Enter, and the screenshot is sent to the model.
 - If the match is ambiguous, you pick from a shortlist.
 - When no description is given, the last captured window is re-captured.
 
-### Hands
+### 🤟 Hands
 
 With hands, the agent can interact with windows:
 
