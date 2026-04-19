@@ -49,6 +49,25 @@ async function screenshotWindow(pi: ExtensionAPI, windowId: number): Promise<str
 	return tmpFile;
 }
 
+async function clickWindow(pi: ExtensionAPI, windowId: number, x: number, y: number): Promise<{ ok: boolean; error?: string }> {
+	const script = SWIFT_CLICK
+		.replace("__WINDOW_ID__", String(windowId))
+		.replace("__X__", String(x))
+		.replace("__Y__", String(y));
+
+	const result = await pi.exec("swift", ["-e", script], { timeout: 15000 });
+	if (result.code !== 0) {
+		return { ok: false, error: result.stderr.trim() || "Swift click script failed" };
+	}
+
+	const output = result.stdout.trim();
+	if (output.startsWith("ERROR:")) {
+		return { ok: false, error: output };
+	}
+
+	return { ok: true };
+}
+
 // ── Extension entry point ────────────────────────────────────────────
 
 export default function piSense(pi: ExtensionAPI) {
@@ -191,6 +210,39 @@ export default function piSense(pi: ExtensionAPI) {
 			};
 		},
 	});
+
+	pi.registerTool({
+		name: "senses__hands__click",
+		label: "Click Window",
+		description:
+			"Click a point in a window. Takes a window ID and (x, y) coordinates in screenshot pixels. " +
+			"The tool automatically activates the app, converts pixel coordinates to screen points " +
+			"(accounting for Retina scaling), and performs the click.",
+		promptSnippet: "Click a point in a macOS window by window ID and screenshot pixel coordinates",
+		promptGuidelines: [
+			"Use senses__eyes__screenshot_window first to see the window, then identify the (x, y) pixel coordinates of the element to click in the screenshot image.",
+			"Coordinates are in screenshot pixels (not points). The tool handles Retina scaling internally.",
+		],
+		parameters: Type.Object({
+			windowId: Type.Number({ description: "The numeric window ID from senses__eyes__list_windows" }),
+			x: Type.Number({ description: "X coordinate in screenshot pixels" }),
+			y: Type.Number({ description: "Y coordinate in screenshot pixels" }),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const result = await clickWindow(pi, params.windowId, params.x, params.y);
+			if (!result.ok) {
+				return {
+					content: [{ type: "text", text: `Click failed: ${result.error}` }],
+					details: {},
+					isError: true,
+				};
+			}
+			return {
+				content: [{ type: "text", text: `Clicked at (${params.x}, ${params.y}) in window ${params.windowId}.` }],
+				details: { windowId: params.windowId, x: params.x, y: params.y },
+			};
+		},
+	});
 }
 
 // ── Window resolution (interactive command only) ─────────────────────
@@ -303,6 +355,85 @@ async function resolveWindowsWithLLM(
 }
 
 // ── Swift snippets ───────────────────────────────────────────────────
+
+const SWIFT_CLICK = `
+import AppKit
+import CoreGraphics
+import Foundation
+
+let targetWindowId: UInt32 = __WINDOW_ID__
+let pixelX: CGFloat = __X__
+let pixelY: CGFloat = __Y__
+
+// Find the window info to get bounds and PID
+let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+guard let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else {
+    print("ERROR: Cannot list windows")
+    exit(1)
+}
+
+var windowBounds: CGRect?
+var windowPID: Int32?
+
+for info in list {
+    guard let id = info["kCGWindowNumber"] as? UInt32, id == targetWindowId,
+          let bounds = info["kCGWindowBounds"] as? [String: Any],
+          let x = bounds["X"] as? CGFloat,
+          let y = bounds["Y"] as? CGFloat,
+          let w = bounds["Width"] as? CGFloat,
+          let h = bounds["Height"] as? CGFloat,
+          let pid = info["kCGWindowOwnerPID"] as? Int32 else { continue }
+    windowBounds = CGRect(x: x, y: y, width: w, height: h)
+    windowPID = pid
+    break
+}
+
+guard let bounds = windowBounds, let pid = windowPID else {
+    print("ERROR: Window \(targetWindowId) not found")
+    exit(1)
+}
+
+// Determine the display scale factor for the screen the window is on
+var displayCount: UInt32 = 0
+CGGetActiveDisplayList(0, nil, &displayCount)
+var displays = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
+CGGetActiveDisplayList(displayCount, &displays, &displayCount)
+
+var scaleFactor: CGFloat = 2.0 // safe default
+for d in displays {
+    let db = CGDisplayBounds(d)
+    if db.contains(CGPoint(x: bounds.midX, y: bounds.midY)) {
+        if let mode = CGDisplayCopyDisplayMode(d) {
+            scaleFactor = CGFloat(mode.pixelWidth) / CGFloat(mode.width)
+        }
+        break
+    }
+}
+
+// Convert screenshot pixels to screen points
+let pointX = bounds.origin.x + (pixelX / scaleFactor)
+let pointY = bounds.origin.y + (pixelY / scaleFactor)
+let clickPoint = CGPoint(x: pointX, y: pointY)
+
+// Activate the owning app
+if let app = NSRunningApplication(processIdentifier: pid) {
+    app.activate()
+    usleep(300_000) // wait for app to come to front
+}
+
+// Perform the click
+guard let mouseDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: clickPoint, mouseButton: .left),
+      let mouseUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: clickPoint, mouseButton: .left) else {
+    print("ERROR: Cannot create mouse events")
+    exit(1)
+}
+
+mouseDown.post(tap: .cghidEventTap)
+usleep(100_000)
+mouseUp.post(tap: .cghidEventTap)
+
+print("OK: clicked at (\(clickPoint.x), \(clickPoint.y)) scale=\(scaleFactor)")
+`.trim();
 
 const SWIFT_WINDOW_LIST = `
 import CoreGraphics

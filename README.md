@@ -37,3 +37,13 @@ Edit/enrich the prompt, press Enter, and the screenshot is sent to the model.
 - Queries are matched by keyword. When that fails, the current model is used to find the best match from the window list.
 - If the match is ambiguous, you pick from a shortlist.
 - When no description is given, the last captured window is re-captured.
+
+### Hands
+
+With hands, the agent can interact with windows:
+
+- **`senses__hands__click`** clicks a point in a window by its numeric ID and `(x, y)` coordinates in screenshot pixels. The tool automatically activates the target app, converts pixel coordinates to screen points (accounting for Retina scaling), and performs the click.
+
+The typical workflow is: screenshot a window with `senses__eyes__screenshot_window`, read the image to identify the target element, estimate its pixel coordinates in from that picture, then call `senses__hands__click`.
+
+Note that agents are not that great on estimating pixel positions. In my current experience, Opus is pretty bad at it, GPT-5.4 is better.
