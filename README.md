@@ -1,8 +1,8 @@
 # pi-senses
 
-(Sloppy) Senses for your pi. At least on macos.
-
 A [pi](https://github.com/badlogic/pi-mono) extension that allows your agent to interact with macos windows using native features only.
+
+[![Demo](assets/demo.gif)](assets/demo.mp4)
 
 ## Senses
 
